@@ -387,15 +387,16 @@ def main():
         logging.info(f"Epoch {epoch + 1} Validation: {avg_val}")
 
         # Save checkpoint
-        torch.save(
-            {
-                "epoch": epoch,
-                "model_state_dict": trial.model.state_dict(),
-                "optimizer_state_dict": trial.optimizer.state_dict(),
-                "config": conf.to_dict(),
-            },
-            f"checkpoint_epoch_{epoch + 1}.pt",
-        )
+        if (epoch + 1) % 10 == 0:
+            torch.save(
+                {
+                    "epoch": epoch,
+                    "model_state_dict": trial.model.state_dict(),
+                    "optimizer_state_dict": trial.optimizer.state_dict(),
+                    "config": conf.to_dict(),
+                },
+                f"checkpoint_epoch_{epoch + 1}.pt",
+            )
 
 
 if __name__ == "__main__":
