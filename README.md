@@ -7,6 +7,7 @@ This repo contains the code to apply supervised SAEs to LLMs. With this, feature
 # Usage
 
 Load the model weights from HuggingFace:
+
 ```python
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -25,6 +26,7 @@ inputs = tokenizer(text, return_tensors="pt", padding=True).to(device)
 ```
 
 To modify the latent feature $h_0$ (`SCAR.hook.mod_features = 0`) of the SAE do the following:
+
 ```python
 SCAR.hook.mod_features = 0
 SCAR.hook.mod_scaling = -100.0
@@ -38,6 +40,7 @@ output = SCAR.generate(
 print(tokenizer.decode(output[0, -32:], skip_special_tokens=True))
 # ' the video. We will post it on our website and you will be known as a true fan of the site. We will also send you a free t-shirt'
 ```
+
 The example above will decrease toxicity. To increase the toxicity one would set `SCAR.hook.mod_scaling = 100.0`. To modify nothing simply set `SCAR.hook.mod_features = None`.
 
 # Reproduction
@@ -53,6 +56,7 @@ The training script is written for a Determined cluster but should be easily ada
 Some the evaluation functions are located in `./evaluations`.
 
 # Citation
+
 ```bibtex
 @misc{haerle2024SCAR
     title={SCAR: Sparse Conditioned Autoencoders for Concept Detection and Steering in LLMs},
@@ -62,3 +66,20 @@ Some the evaluation functions are located in `./evaluations`.
     archivePrefix={arXiv}
 }
 ```
+
+## multi-concept SAE steps:
+
+`pip install transformers datasets poetry`
+`poetry install`
+
+form the datasets:
+
+1. rtp: `python create_training_data/act_dataset.py RTP 25 llama3 mlp`
+2. sp:
+
+- `git clone https://github.com/harsh19/Shakespearizing-Modern-English.git ../datasets/Shakespearizing-Modern-English`
+- `python create_training_data/act_dataset.py SP 25 llama3 mlp`
+
+3. merge: `python create_training_data/act_dataset.py multi 25 llama3 mlp`
+
+then actually train the model: `python llama3_SAE/train_multi_concept_sae.py --config llama3_SAE/config_multi.json`
