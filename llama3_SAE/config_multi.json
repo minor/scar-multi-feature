@@ -6,10 +6,16 @@
     "lr": 1e-05,
     "max_epochs": 100,
     "batch_size": 2048,
-    "ds_path": "../datasets/llama3-RTP_SP-B25",
+    "ds_path": "../datasets/llama3-RTP_SP-B25-mlp",
     "sparstity_coef": 1.0,
     "cond_loss_scaling": 1.0,
     "num_concepts": 2,
-    "concept_names": ["toxicity", "shakespeare"],
-    "concept_loss_weights": [1.0, 1.0]
+    "concept_names": [
+        "toxicity",
+        "shakespeare"
+    ],
+    "concept_loss_weights": [
+        1.0,
+        1.0
+    ]
 }

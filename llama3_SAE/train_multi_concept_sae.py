@@ -11,6 +11,7 @@ from torch.utils.data import DataLoader
 from datasets import load_from_disk
 from modeling_llama3_SAE import TopK, Autoencoder, JumpReLu, HeavyStep
 
+
 # ------------------------------------------------------
 #               Support Loss Functions
 # ------------------------------------------------------
@@ -178,6 +179,19 @@ class SAETrial:
         #     total_train_steps * self.conf.sparstity_coef_warmup_duration
         # )
 
+    # Add this utility function inside the SAETrial class or at the top level
+    def _move_to_device(self, data):
+        if isinstance(data, torch.Tensor):
+            return data.to(self.device)
+        elif isinstance(data, dict):
+            return {k: self._move_to_device(v) for k, v in data.items()}
+        elif isinstance(data, list):
+            return [self._move_to_device(v) for v in data]
+        elif isinstance(data, tuple):
+            return tuple(self._move_to_device(v) for v in data)
+        else:
+            return data  # Leave non-tensor data unchanged
+
     # ------------------------------------------------------
     #   Concept loss function for multi-concept
     # ------------------------------------------------------
@@ -254,7 +268,8 @@ class SAETrial:
         adapted for multi-concept usage. Returns a dict of losses.
         """
         self.model.train()
-        acts = batch["acts"].to(self.device)
+        batch = self._move_to_device(batch)  # Use the helper
+        acts = batch["acts"]  # Now safe to access keys if batch is a dict
 
         # Forward pass
         latents_pre_act, latents, recons = self.model(acts)
@@ -284,7 +299,9 @@ class SAETrial:
         """
         self.model.eval()
         with torch.no_grad():
-            acts = batch["acts"].to(self.device)
+            batch = self._move_to_device(batch)  # Use the helper
+            acts = batch["acts"]
+
             latents_pre_act, latents, recons = self.model(acts)
             _, loss_dict = self.get_combined_loss(
                 latents_pre_act, latents, recons, acts, batch

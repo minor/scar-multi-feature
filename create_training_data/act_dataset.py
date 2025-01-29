@@ -26,7 +26,8 @@ os.makedirs("../datasets", exist_ok=True)
 
 def get_SP_dataset():
     """
-    Creates Shakespear dataset modern vs original based on data from: https://github.com/harsh19/Shakespearizing-Modern-English.git
+    Creates Shakespeare dataset: Modern vs Original based on data from:
+    https://github.com/harsh19/Shakespearizing-Modern-English.git
     """
     ds = {
         "train": {"text": [], "label": []},
@@ -36,14 +37,12 @@ def get_SP_dataset():
 
     for stage in ["train", "valid", "test"]:
         for label in ["modern", "original"]:
-            with open(
-                f"/nfs/scratch_2/ruben/Shakespearizing-Modern-English/data/{stage}.{label}.nltktok",
-                "r",
-            ) as f:
-                sents = [
-                    sent.replace("\n", "")
-                    for sent in tqdm(f.readlines(), desc=f"{stage}: {label}")
-                ]
+            filepath = f"../datasets/Shakespearizing-Modern-English/data/{stage}.{label}.nltktok"
+            if not os.path.exists(filepath):
+                raise FileNotFoundError(f"Missing file: {filepath}")
+
+            with open(filepath, "r") as f:
+                sents = [sent.strip() for sent in f.readlines()]
                 labels = [label for _ in range(len(sents))]
 
             ds[stage]["text"] += sents
@@ -56,11 +55,9 @@ def get_SP_dataset():
             "test": Dataset.from_dict(ds["test"]),
         }
     )
-    print(dataset)
-    dataset.save_to_disk(
-        "../datasets/Shakespeare",
-        num_proc=32,
-    )
+
+    os.makedirs("../datasets", exist_ok=True)
+    dataset.save_to_disk("../datasets/Shakespeare")
     return dataset
 
 
@@ -401,7 +398,14 @@ class ActivationsDataset_local(ActivationsDataset):
 
     def get_dataset(self):
         if self.ds_name == "shakespeare":
-            dataset = load_from_disk(self.ds_path)
+            dataset_path = "../datasets/Shakespeare"
+
+            # Check if Shakespeare dataset exists, if not, generate it
+            if not os.path.exists(dataset_path) or not os.path.isdir(dataset_path):
+                logger.info("Shakespeare dataset not found, generating...")
+                get_SP_dataset()
+
+            dataset = load_from_disk(dataset_path)
             dataset = dataset.map(
                 self.encode_SP,
                 batched=True,
@@ -533,23 +537,49 @@ def create_mixture_dataset(block: int, small: bool = False):
     )
 
 
-def create_multi_concept_dataset(block: int):
-    # Load individual datasets
-    ds_rtp = load_from_disk(f"../datasets/llama3-RTP-B{block:02}")
-    ds_sp = load_from_disk(f"../datasets/llama3-SP-B{block:02}")
+def ensure_single_dataset(ds):
+    """
+    If ds is a DatasetDict, concatenate all of its splits
+    into a single Dataset. If ds is already a Dataset, do nothing.
+    """
+    if isinstance(ds, Dataset):
+        return ds
+    elif isinstance(ds, DatasetDict):
+        # Combine each split (train, test, val, etc.) into one big dataset
+        all_splits = []
+        for split_name in ds.keys():
+            all_splits.append(ds[split_name])
+        merged = concatenate_datasets(all_splits)
+        return merged
+    else:
+        raise TypeError(f"Unknown dataset type: {type(ds)}")
 
-    # Add missing label columns
-    ds_rtp = ds_rtp.add_column("label", [-1] * len(ds_rtp))  # -1 = no style label
-    ds_sp = ds_sp.add_column("toxicity", [-1] * len(ds_sp))  # -1 = no toxicity label
 
-    # Combine datasets
-    combined_ds = concatenate_datasets([ds_rtp, ds_sp]).shuffle(seed=42)
+def create_multi_concept_dataset(block: int, site="mlp"):
+    rtp_path = f"../datasets/llama3-RTP-B{block:02}-{site}"
+    sp_path = f"../datasets/llama3-SP-B{block:02}-{site}"
+    merged_path = f"../datasets/llama3-RTP_SP-B{block:02}-{site}"
 
-    # Train-test split
-    split_ds = combined_ds.train_test_split(test_size=0.1)
+    ds_rtp = load_from_disk(rtp_path)  # Could be Dataset or DatasetDict
+    ds_sp = load_from_disk(sp_path)  # Could be Dataset or DatasetDict
 
-    # Save final dataset
-    split_ds.save_to_disk(f"../datasets/llama3-RTP_SP-B{block:02}")
+    # 1. Convert each to a single Dataset:
+    ds_rtp = ensure_single_dataset(ds_rtp)
+    ds_sp = ensure_single_dataset(ds_sp)
+
+    # 2. Add columns to each single Dataset:
+    ds_rtp = ds_rtp.add_column("label", [-1] * len(ds_rtp))  # -1 means “no style label”
+    ds_sp = ds_sp.add_column(
+        "toxicity", [-1] * len(ds_sp)
+    )  # -1 means “no toxicity label”
+
+    # 3. Concatenate both into one big Dataset, then do a final train_test_split
+    combined = concatenate_datasets([ds_rtp, ds_sp]).shuffle(seed=42)
+    final_ds = combined.train_test_split(test_size=0.1)
+
+    # 4. Save final dataset
+    final_ds.save_to_disk(merged_path)
+    print(f"Saved multi-concept dataset to: {merged_path}")
 
 
 if __name__ == "__main__":
@@ -577,6 +607,18 @@ if __name__ == "__main__":
         ds_path = "../datasets/Shakespeare"
         ds_name = "shakespeare"
         ds_split = None
+    elif sys.argv[1] == "multi":
+        # This is where you call create_multi_concept_dataset!
+        # e.g. python act_dataset.py multi 25 llama3 mlp
+        block = int(sys.argv[2])
+
+        # If you also need the site, e.g. "mlp" or "block"
+        model_type = sys.argv[3]  # "llama3"
+        site = sys.argv[4]  # "mlp"
+
+        # Actually call the merging function
+        create_multi_concept_dataset(block, site)
+        sys.exit(0)  # Stop here. No further dataset creation logic needed.
     else:
         raise NotImplementedError
 
