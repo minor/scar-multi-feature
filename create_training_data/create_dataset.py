@@ -1,3 +1,4 @@
+import os
 from datasets import load_dataset, Features, Sequence, Value, Dataset, load_from_disk
 from typing import List
 import torch
@@ -9,7 +10,7 @@ multiprocess.set_start_method("spawn", force=True)
 
 from typing import List
 
-from hf_token import HF_TOKEN
+HF_TOKEN = {}
 
 
 class HookedTransformer:
@@ -106,6 +107,9 @@ class Encode:
 
 
 if __name__ == "__main__":
+    # Create datasets directory if it doesn't exist
+    os.makedirs("../datasets", exist_ok=True)
+
     model = transformers.AutoModelForCausalLM.from_pretrained(
         "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
         token=HF_TOKEN,
@@ -123,7 +127,7 @@ if __name__ == "__main__":
         "wikipedia",
         "20220301.simple",
         split="train[:20000]",
-        cache_dir="/nfs/scratch_2/ruben/cache",
+        cache_dir="../datasets/cache",
     )
 
     dataset.cleanup_cache_files()
@@ -135,10 +139,10 @@ if __name__ == "__main__":
 
     dataset = Enc.run(dataset)
     dataset.set_format("pt", columns=["input_ids", "Block -1"], output_all_columns=True)
-    dataset.save_to_disk("/nfs/scratch_2/ruben/wiki_dataset")
+    dataset.save_to_disk("../datasets/wiki_dataset")
     torch.cuda.empty_cache()
 
-    dataset = load_from_disk("/nfs/scratch_2/ruben/wiki_datase_act")
+    dataset = load_from_disk("../datasets/wiki_dataset")
     tmp = []
     for entry in tqdm(iter(dataset)):
         tmp += list(entry["Block -1"][0])
@@ -146,4 +150,4 @@ if __name__ == "__main__":
     dataset = Dataset.from_dict({"Block -1": tmp})
     dataset = dataset.cast(features=Features({"Block -1": Sequence(Value("float16"))}))
     dataset.set_format("pt", columns=["Block -1"], output_all_columns=True)
-    dataset.save_to_disk("/nfs/scratch_2/ruben/wiki_dataset_act_fp16")
+    dataset.save_to_disk("../datasets/wiki_dataset_act_fp16")

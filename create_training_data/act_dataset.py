@@ -1,3 +1,4 @@
+import os
 import torch
 from torch.utils.data import Dataset
 from datasets import (
@@ -12,12 +13,15 @@ from tqdm import tqdm
 from create_dataset import HookedTransformer
 import sys
 
-from hf_token import HF_TOKEN
+HF_TOKEN = {}
 
 import logging
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# create datasets directory if it doesn't exist
+os.makedirs("../datasets", exist_ok=True)
 
 
 def get_SP_dataset():
@@ -54,7 +58,7 @@ def get_SP_dataset():
     )
     print(dataset)
     dataset.save_to_disk(
-        "/nfs/scratch_2/ruben/SAE-FeatureExtraction/datasets/Shakespeare",
+        "../datasets/Shakespeare",
         num_proc=32,
     )
     return dataset
@@ -68,7 +72,7 @@ class ActivationsDataset(Dataset):
         ds_path: str = "wikipedia",
         ds_name: str = "20220301.simple",
         ds_split: str = "train",
-        ds_cache_dir: str = "/nfs/scratch_2/ruben/cache",
+        ds_cache_dir: str = "../datasets/cache",
         model_name: str = "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
         hooks: int = -1,
         site: str = "mlp",
@@ -375,7 +379,7 @@ class ActivationsDataset_local(ActivationsDataset):
         ds_path: str = "wikipedia",
         ds_name: str = "20220301.simple",
         ds_split: str = "train",
-        ds_cache_dir: str = "/nfs/scratch_2/ruben/cache",
+        ds_cache_dir: str = "../datasets/cache",
         model_name: str = "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
         hooks: int = -1,
         site: str = "mlp",
@@ -402,6 +406,22 @@ class ActivationsDataset_local(ActivationsDataset):
                 self.encode_SP,
                 batched=True,
                 batch_size=25,
+            )
+        elif self.ds_name == "../datasets/RTP":
+            dataset = load_from_disk("../datasets/RTP")
+            dataset = dataset.map(
+                self.encode_rtp,
+                batched=True,
+                batch_size=100,
+                remove_columns=[
+                    "filename",
+                    "begin",
+                    "end",
+                    "challenging",
+                    "prompt",
+                    "continuation",
+                    "sent_toxicity_bin",
+                ],
             )
         elif ds_path == "nvidia/Aegis-AI-Content-Safety-Dataset-1.0":
             dataset = load_dataset(
@@ -462,27 +482,6 @@ class ActivationsDataset_local(ActivationsDataset):
                     batched=True,
                     batch_size=25,
                 )
-            elif (
-                self.ds_name
-                == "/nfs/scratch_2/ruben/SAE-FeatureExtraction/datasets/RTP"
-            ):
-                dataset = load_from_disk(
-                    "/nfs/scratch_2/ruben/SAE-FeatureExtraction/datasets/RTP"
-                )
-                dataset = dataset.map(
-                    self.encode_rtp,
-                    batched=True,
-                    batch_size=100,
-                    remove_columns=[
-                        "filename",
-                        "begin",
-                        "end",
-                        "challenging",
-                        "prompt",
-                        "continuation",
-                        "sent_toxicity_bin",
-                    ],
-                )
             else:
                 dataset = load_dataset(
                     self.ds_path,
@@ -514,15 +513,11 @@ class ActivationsDataset_local(ActivationsDataset):
 
 def create_mixture_dataset(block: int, small: bool = False):
     suff = "_small" if small else ""
-    ds_wiki = load_from_disk(
-        f"/nfs/scratch_2/ruben/SAE-FeatureExtraction/datasets/llama3-Wiki{suff}-B{block:02}"
-    ).shuffle(42)
+    ds_wiki = load_from_disk(f"../datasets/llama3-Wiki{suff}-B{block:02}").shuffle(42)
 
     ds_wiki = ds_wiki.with_format("torch").train_test_split(test_size=0.1)
 
-    ds_rtp = load_from_disk(
-        f"/nfs/scratch_2/ruben/SAE-FeatureExtraction/datasets/llama3-RTP-B{block:02}"
-    ).shuffle(42)
+    ds_rtp = load_from_disk(f"../datasets/llama3-RTP-B{block:02}").shuffle(42)
     ds_rtp = ds_rtp.with_format("torch").train_test_split(test_size=0.1)
 
     print(ds_wiki)
@@ -533,9 +528,28 @@ def create_mixture_dataset(block: int, small: bool = False):
     dataset = DatasetDict({"train": dataset_train, "test": dataset_test})
     print(dataset)
     dataset.save_to_disk(
-        f"/nfs/scratch_2/ruben/SAE-FeatureExtraction/datasets/llama3-Wiki{suff}_RTP-B{block:02}",
+        f"../datasets/llama3-Wiki{suff}_RTP-B{block:02}",
         num_proc=32,
     )
+
+
+def create_multi_concept_dataset(block: int):
+    # Load individual datasets
+    ds_rtp = load_from_disk(f"../datasets/llama3-RTP-B{block:02}")
+    ds_sp = load_from_disk(f"../datasets/llama3-SP-B{block:02}")
+
+    # Add missing label columns
+    ds_rtp = ds_rtp.add_column("label", [-1] * len(ds_rtp))  # -1 = no style label
+    ds_sp = ds_sp.add_column("toxicity", [-1] * len(ds_sp))  # -1 = no toxicity label
+
+    # Combine datasets
+    combined_ds = concatenate_datasets([ds_rtp, ds_sp]).shuffle(seed=42)
+
+    # Train-test split
+    split_ds = combined_ds.train_test_split(test_size=0.1)
+
+    # Save final dataset
+    split_ds.save_to_disk(f"../datasets/llama3-RTP_SP-B{block:02}")
 
 
 if __name__ == "__main__":
@@ -544,8 +558,8 @@ if __name__ == "__main__":
         ds_name = None
         ds_split = "train"
     elif sys.argv[1] == "RTP_split":
-        ds_path = "/nfs/scratch_2/ruben/SAE-FeatureExtraction/datasets/RTP"
-        ds_name = "/nfs/scratch_2/ruben/SAE-FeatureExtraction/datasets/RTP"
+        ds_path = "../datasets/RTP"
+        ds_name = "../datasets/RTP"
         ds_split = "train"
     elif sys.argv[1] == "CSD":
         ds_path = "nvidia/Aegis-AI-Content-Safety-Dataset-1.0"
@@ -560,7 +574,7 @@ if __name__ == "__main__":
         ds_name = "wikitext-103-raw-v1"
         ds_split = "train[:30000]"
     elif sys.argv[1] == "SP":
-        ds_path = "/nfs/scratch_2/ruben/SAE-FeatureExtraction/datasets/Shakespeare"
+        ds_path = "../datasets/Shakespeare"
         ds_name = "shakespeare"
         ds_split = None
     else:
@@ -592,12 +606,12 @@ if __name__ == "__main__":
         ds_path=ds_path,
         ds_name=ds_name,
         ds_split=ds_split,
-        ds_cache_dir="/nfs/scratch_2/ruben/cache_3",
+        ds_cache_dir="../datasets/cache_3",
         batch_size=2048,
     )
     logger.info(f"Length of dataset: {len(dataset)}")
 
     dataset.iter_dataset.save_to_disk(
-        f"/nfs/scratch_2/ruben/SAE-FeatureExtraction/datasets/{sys.argv[3]}-{sys.argv[1]}-B{str(block) if len(str(block)) > 1 else '0'+str(block)}-{site}",
+        f"../datasets/{sys.argv[3]}-{sys.argv[1]}-B{str(block) if len(str(block)) > 1 else '0' + str(block)}-{site}",
         num_proc=32,
     )
