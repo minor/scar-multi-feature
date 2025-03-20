@@ -61,6 +61,98 @@ def get_SP_dataset():
     return dataset
 
 
+def create_emotion_datasets(model_type: str, block: int, site: str):
+    """
+    Downloads the dair-ai/emotion dataset from Hugging Face and splits it into 6 separate datasets,
+    one for each emotion: sadness (0), joy (1), love (2), anger (3), fear (4), surprise (5).
+
+    Args:
+        model_type (str): Model type (e.g., "llama3", "gemma2")
+        block (int): Block number
+        site (str): Site type (e.g., "mlp", "block")
+    """
+    logger.info("Downloading emotion dataset from Hugging Face...")
+
+    # Download the dataset
+    emotion_dataset = load_dataset(
+        "dair-ai/emotion", "split", cache_dir="../datasets/cache"
+    )
+
+    # Process for each emotion
+    emotion_labels = {
+        0: "sadness",
+        1: "joy",
+        2: "love",
+        3: "anger",
+        4: "fear",
+        5: "surprise",
+    }
+
+    # For each emotion, create and save a separate dataset
+    for emotion_id, emotion_name in emotion_labels.items():
+        logger.info(f"Processing emotion: {emotion_name} (id: {emotion_id})")
+
+        # Filter the dataset for this emotion
+        filtered_ds = emotion_dataset.filter(
+            lambda example: example["label"] == emotion_id
+        )
+
+        # Add emotion_X columns initialized with -1 for multi-dataset compatibility
+        processed_ds = filtered_ds.map(
+            lambda example: {
+                f"emotion_{i}": 1 if i == emotion_id else 0 for i in range(6)
+            }
+        )
+
+        # Add placeholder columns for toxicity and style
+        processed_ds = processed_ds.map(
+            lambda example: {
+                "toxicity": -1,  # -1 means "no toxicity label"
+                "style": -1,  # -1 means "no style label"
+            }
+        )
+
+        # Process through model activations
+        model_name = (
+            "meta-llama/Meta-Llama-3-8B"
+            if model_type == "llama3"
+            else "google/gemma-2-9b"
+        )
+
+        # Create activation dataset
+        logger.info(f"Generating activations for emotion: {emotion_name}")
+        activation_ds = ActivationsDataset_local(
+            model_name=model_name,
+            hooks=block,
+            site=site,
+            ds_path=None,  # Using already loaded dataset
+            ds_name=None,
+            ds_split=None,
+            ds_cache_dir="../datasets/cache_emotion",
+            batch_size=64,
+        )
+
+        # Process the dataset to get activations
+        processed_ds = processed_ds.map(
+            lambda example: activation_ds.encode(example),
+            batched=True,
+            batch_size=32,
+            remove_columns=[
+                "text",
+                "label",
+            ],  # Remove original columns that will be recreated
+        )
+
+        # Save the dataset for this emotion
+        output_path = (
+            f"../datasets/{model_type}-emotion_{emotion_id}-B{block:02}-{site}"
+        )
+        logger.info(f"Saving emotion dataset to: {output_path}")
+        processed_ds.save_to_disk(output_path, num_proc=32)
+
+    logger.info("All emotion datasets created successfully!")
+
+
 class ActivationsDataset(Dataset):
     """Activation Dataset of ."""
 
@@ -568,10 +660,10 @@ def create_multi_concept_dataset(block: int, site="mlp"):
     ds_sp = ensure_single_dataset(ds_sp)
 
     # 2. Add columns to each single Dataset:
-    ds_rtp = ds_rtp.add_column("label", [-1] * len(ds_rtp))  # -1 means “no style label”
+    ds_rtp = ds_rtp.add_column("label", [-1] * len(ds_rtp))  # -1 means "no style label"
     ds_sp = ds_sp.add_column(
         "toxicity", [-1] * len(ds_sp)
-    )  # -1 means “no toxicity label”
+    )  # -1 means "no toxicity label"
 
     # 3. Concatenate both into one big Dataset, then do a final train_test_split
     combined = concatenate_datasets([ds_rtp, ds_sp]).shuffle(seed=42)
@@ -580,6 +672,166 @@ def create_multi_concept_dataset(block: int, site="mlp"):
     # 4. Save final dataset
     final_ds.save_to_disk(merged_path)
     print(f"Saved multi-concept dataset to: {merged_path}")
+
+
+# def create_multi_dataset(block: int, model_type: str, site: str):
+#     """Create merged multi-concept dataset"""
+#     datasets = []
+
+#     # Load all component datasets
+#     for dataset_name in ["RTP", "SP"] + [f"emotion_{i}" for i in range(6)]:
+#         path = f"../datasets/{model_type}-{dataset_name}-B{block:02}-{site}"
+#         ds = load_from_disk(path)
+
+#         # Add placeholder columns if missing
+#         if "toxicity" not in ds.column_names:
+#             ds = ds.add_column("toxicity", [-1] * len(ds))
+#         if "style" not in ds.column_names:
+#             ds = ds.add_column("style", [-1] * len(ds))
+#         for i in range(6):
+#             col_name = f"emotion_{i}"
+#             if col_name not in ds.column_names:
+#                 ds = ds.add_column(col_name, [-1] * len(ds))
+
+#         datasets.append(ds)
+
+#     # Merge and split
+#     combined = concatenate_datasets(datasets).shuffle(seed=42)
+#     final_ds = combined.train_test_split(test_size=0.1)
+#     final_ds.save_to_disk(f"../datasets/{model_type}-MULTI_ALL-B{block:02}-{site}")
+
+
+def create_all_datasets(block: int, model_type: str, site: str):
+    """
+    Creates all datasets needed for training and merges them into one big dataset.
+
+    Args:
+        block (int): Block number
+        model_type (str): Model type ("llama3" or "gemma2")
+        site (str): Site type ("mlp" or "block")
+    """
+    import subprocess
+    import os
+
+    # Set up paths and model info
+    model_hf = (
+        "meta-llama/Meta-Llama-3-8B" if model_type == "llama3" else "google/gemma-2-9b"
+    )
+
+    logger.info("=== Starting comprehensive dataset creation process ===")
+
+    # Step 1: Create RTP dataset
+    logger.info("Step 1/5: Creating RTP dataset...")
+    ds_path = "allenai/real-toxicity-prompts"
+    ds_name = None
+    ds_split = "train"
+
+    rtp_dataset = ActivationsDataset_local(
+        model_name=model_hf,
+        hooks=block,
+        site=site,
+        ds_path=ds_path,
+        ds_name=ds_name,
+        ds_split=ds_split,
+        ds_cache_dir="../datasets/cache_3",
+        batch_size=2048,
+    )
+
+    rtp_dataset.iter_dataset.save_to_disk(
+        f"../datasets/{model_type}-RTP-B{block:02}-{site}",
+        num_proc=32,
+    )
+    logger.info("RTP dataset creation completed.")
+
+    # Step 2: Clone Shakespeare repository if needed
+    logger.info("Step 2/5: Setting up Shakespeare data...")
+    sp_repo_path = "../datasets/Shakespearizing-Modern-English"
+    if not os.path.exists(sp_repo_path):
+        logger.info("Cloning Shakespeare repository...")
+        result = subprocess.run(
+            [
+                "git",
+                "clone",
+                "https://github.com/harsh19/Shakespearizing-Modern-English.git",
+                sp_repo_path,
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            logger.error(f"Failed to clone repository: {result.stderr}")
+            raise RuntimeError("Failed to clone Shakespeare repository")
+        logger.info("Shakespeare repository cloned successfully.")
+    else:
+        logger.info("Shakespeare repository already exists, skipping clone.")
+
+    # Step 3: Create SP dataset
+    logger.info("Step 3/5: Creating SP dataset...")
+    ds_path = "../datasets/Shakespeare"
+    ds_name = "shakespeare"
+    ds_split = None
+
+    # Make sure Shakespeare dataset exists
+    if not os.path.exists(ds_path) or not os.path.isdir(ds_path):
+        logger.info("Shakespeare dataset not found, generating...")
+        get_SP_dataset()
+
+    sp_dataset = ActivationsDataset_local(
+        model_name=model_hf,
+        hooks=block,
+        site=site,
+        ds_path=ds_path,
+        ds_name=ds_name,
+        ds_split=ds_split,
+        ds_cache_dir="../datasets/cache_3",
+        batch_size=2048,
+    )
+
+    sp_dataset.iter_dataset.save_to_disk(
+        f"../datasets/{model_type}-SP-B{block:02}-{site}",
+        num_proc=32,
+    )
+    logger.info("SP dataset creation completed.")
+
+    # Step 4: Create all emotion datasets
+    logger.info("Step 4/5: Creating emotion datasets...")
+    create_emotion_datasets(model_type, block, site)
+
+    # Step 5: Merge all datasets
+    logger.info("Step 5/5: Merging all datasets into one...")
+    create_multi_dataset(block, model_type, site)
+
+    logger.info("=== All dataset creation steps completed successfully! ===")
+    logger.info(
+        f"Final multi-concept dataset saved at: ../datasets/{model_type}-MULTI_ALL-B{block:02}-{site}"
+    )
+
+
+def create_multi_dataset(block: int, model_type: str, site: str):
+    """Create merged multi-concept dataset"""
+    datasets = []
+
+    # Load all component datasets
+    for dataset_name in ["RTP", "SP"] + [f"emotion_{i}" for i in range(6)]:
+        path = f"../datasets/{model_type}-{dataset_name}-B{block:02}-{site}"
+        ds = load_from_disk(path)
+
+        # Add placeholder columns if missing
+        if "toxicity" not in ds.column_names:
+            ds = ds.add_column("toxicity", [-1] * len(ds))
+        if "style" not in ds.column_names:
+            ds = ds.add_column("style", [-1] * len(ds))
+        for i in range(6):
+            col_name = f"emotion_{i}"
+            if col_name not in ds.column_names:
+                ds = ds.add_column(col_name, [-1] * len(ds))
+
+        datasets.append(ds)
+
+    # Merge and split
+    combined = concatenate_datasets(datasets).shuffle(seed=42)
+    final_ds = combined.train_test_split(test_size=0.1)
+    final_ds.save_to_disk(f"../datasets/{model_type}-MULTI_ALL-B{block:02}-{site}")
 
 
 if __name__ == "__main__":
@@ -607,18 +859,32 @@ if __name__ == "__main__":
         ds_path = "../datasets/Shakespeare"
         ds_name = "shakespeare"
         ds_split = None
+    elif sys.argv[1] == "emotion":
+        # Handle emotion dataset creation
+        block = int(sys.argv[2])
+        model_type = sys.argv[3]  # "llama3" or "gemma2"
+        site = sys.argv[4]  # "mlp" or "block"
+
+        create_emotion_datasets(model_type, block, site)
+        sys.exit(0)  # Stop here. No further dataset creation logic needed.
     elif sys.argv[1] == "multi":
         # This is where you call create_multi_concept_dataset!
         # e.g. python act_dataset.py multi 25 llama3 mlp
         block = int(sys.argv[2])
-
-        # If you also need the site, e.g. "mlp" or "block"
         model_type = sys.argv[3]  # "llama3"
         site = sys.argv[4]  # "mlp"
 
         # Actually call the merging function
-        create_multi_concept_dataset(block, site)
+        create_multi_dataset(block, model_type, site)
         sys.exit(0)  # Stop here. No further dataset creation logic needed.
+    elif sys.argv[1] == "all":
+        # Handle creating all datasets in one go
+        block = int(sys.argv[2])
+        model_type = sys.argv[3]  # "llama3" or "gemma2"
+        site = sys.argv[4]  # "mlp" or "block"
+
+        create_all_datasets(block, model_type, site)
+        sys.exit(0)  # Stop here
     else:
         raise NotImplementedError
 
